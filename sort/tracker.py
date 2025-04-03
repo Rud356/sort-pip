@@ -1,8 +1,38 @@
-from __future__ import print_function
+from __future__ import print_function, annotations
 
+from typing import Any
 import numpy as np
 from filterpy.kalman import KalmanFilter
 from scipy.optimize import linear_sum_assignment
+
+DetectionArray = np.ndarray[
+    Any,
+    np.dtype(
+        [
+            ("x1", np.float32),
+            ("y1", np.float32),
+            ("x2", np.float32),
+            ("y2", np.float32),
+            ("score", np.float32),
+            ("class_id", np.float32),
+        ]
+    ),
+]
+
+TrackingArray = np.ndarray[
+    Any,
+    np.dtype(
+        [
+            ("x1", np.float32),
+            ("y1", np.float32),
+            ("x2", np.float32),
+            ("y2", np.float32),
+            ("score", np.float32),
+            ("class_id", np.float32),
+            ("track_id", np.float32),
+        ]
+    ),
+]
 
 np.random.seed(0)
 
@@ -68,7 +98,7 @@ def convert_x_to_bbox(x, score=None):
     """
     w = np.sqrt(x[2] * x[3])
     h = x[2] / w
-    if score == None:
+    if score is None:
         return np.array([x[0] - w / 2.0, x[1] - h / 2.0, x[0] + w / 2.0, x[1] + h / 2.0]).reshape((1, 4))
     else:
         return np.array([x[0] - w / 2.0, x[1] - h / 2.0, x[0] + w / 2.0, x[1] + h / 2.0, score]).reshape((1, 5))
@@ -196,39 +226,44 @@ def associate_detections_to_trackers(detections, trackers, iou_threshold=0.3):
 
 
 class SortTracker(object):
-    def __init__(self, max_age=1, min_hits=3, iou_threshold=0.3):
+    def __init__(self, max_age: int = 1, min_hits: int = 3, iou_threshold: float = 0.3):
         """
-        Sets key parameters for SORT
+        Sets key parameters for SORT.
         """
+        assert max_age >= 0, f"Invalid max age for tracking, must be at least 1 (got {max_age})"
+        assert min_hits >= 0, f"Invalid min_hits for tracking, must be at least 1 (got {min_hits})"
+
         self.max_age = max_age
         self.min_hits = min_hits
         self.iou_threshold = iou_threshold
         self.trackers = []
         self.frame_count = 0
 
-    def update(self, dets, _):
+    def update(self, dets: DetectionArray) -> TrackingArray:
         """
-        Params:
-          dets - a numpy array of detections in the format [[x1,y1,x2,y2,score],[x1,y1,x2,y2,score],...]
-        Requires: this method must be called once for each frame even with empty detections (use np.empty((0, 5)) for frames without detections).
-        Returns the a similar array, where the last column is the object ID.
+        Updates internal state of trackers and gives information about tracking objects.
 
-        NOTE: The number of objects returned may differ from the number of detections provided.
+        :param dets: - a numpy array of detections in the format [[x1,y1,x2,y2,score,class_id],[x1,y1,x2,y2,score,class_id],...].
+        :returns: Similar array, where the last column is the object ID or numpy array with provided in format [[x1,y1,x2,y2,score,class_id,confidence], ...].
         """
+        if len(dets) == 0:
+            # Replace with empties
+            dets = np.empty((0, 6))
+
         self.frame_count += 1
         # get predicted locations from existing trackers.
-        trks = np.zeros((len(self.trackers), 5))
+        tracks = np.zeros((len(self.trackers), 5))
         to_del = []
         ret = []
-        for t, trk in enumerate(trks):
+        for t, trk in enumerate(tracks):
             pos = self.trackers[t].predict()[0]
             trk[:] = [pos[0], pos[1], pos[2], pos[3], 0]
             if np.any(np.isnan(pos)):
                 to_del.append(t)
-        trks = np.ma.compress_rows(np.ma.masked_invalid(trks))
+        tracks = np.ma.compress_rows(np.ma.masked_invalid(tracks))
         for t in reversed(to_del):
             self.trackers.pop(t)
-        matched, unmatched_dets, unmatched_trks = associate_detections_to_trackers(dets, trks, self.iou_threshold)
+        matched, unmatched_dets, unmatched_tracks = associate_detections_to_trackers(dets, tracks, self.iou_threshold)
 
         # update matched trackers with assigned detections
         for m in matched:
@@ -243,12 +278,14 @@ class SortTracker(object):
             d = trk.get_state()[0]
             x1, y1, x2, y2 = d[0], d[1], d[2], d[3]
             if (trk.time_since_update < 1) and (trk.hit_streak >= self.min_hits or self.frame_count <= self.min_hits):
-                # breakpoint()
                 ret.append(np.concatenate((d, [trk.id + 1], [trk.cls], [trk.conf])).reshape(1, -1))
             i -= 1
-            # remove dead tracklet
+
+            # Remove dead tracklet
             if trk.time_since_update > self.max_age:
                 self.trackers.pop(i)
+
         if len(ret) > 0:
             return np.concatenate(ret)
+
         return np.empty((0, 7))
