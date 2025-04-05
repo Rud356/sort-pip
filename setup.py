@@ -24,7 +24,7 @@ def get_version():
 
 
 setuptools.setup(
-    name="sort-track",
+    name="sort-pip",
     version=get_version(),
     author="kadirnar",
     license="MIT",
